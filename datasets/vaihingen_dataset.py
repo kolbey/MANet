@@ -10,7 +10,7 @@ import albumentations as albu
 import matplotlib.patches as mpatches
 from PIL import Image
 import random
-from dataset_transform import *
+from .transform import *
 
 CLASSES = ('ImSurf', 'Building', 'LowVeg', 'Tree', 'Car', 'Clutter')
 PALETTE = [[255, 255, 255], [0, 0, 255], [0, 255, 255], [0, 255, 0], [255, 204, 0], [255, 0, 0]]
@@ -54,7 +54,7 @@ def val_aug(img, mask):
 
 
 class VaihingenDataset(Dataset):
-    def __init__(self, data_root='data/vaihingen/test', mode='val', img_dir='images_512', mask_dir='masks_512',
+    def __init__(self, data_root='data/vaihingen/test', mode='val', img_dir='images_1024', mask_dir='masks_1024',
                  img_suffix='.tif', mask_suffix='.png', transform=val_aug, mosaic_ratio=0.0,
                  img_size=ORIGIN_IMG_SIZE):
         self.data_root = data_root
@@ -66,7 +66,7 @@ class VaihingenDataset(Dataset):
         self.mode = mode
         self.mosaic_ratio = mosaic_ratio
         self.img_size = img_size
-        self.img_ids = self.get_img_ids(self.data_root, self.img_dir, self.mask_dir, self.mode)
+        self.img_ids = self.get_img_ids(self.data_root, self.img_dir, self.mask_dir)
 
     def __getitem__(self, index):
         p_ratio = random.random()
@@ -88,17 +88,17 @@ class VaihingenDataset(Dataset):
     def __len__(self):
         return len(self.img_ids)
 
-    def get_img_ids(self, data_root, img_dir, mask_dir, mode):
-        img_filename_list = os.listdir(osp.join(data_root, mode, img_dir))
-        mask_filename_list = os.listdir(osp.join(data_root, mode, mask_dir))
+    def get_img_ids(self, data_root, img_dir, mask_dir):
+        img_filename_list = os.listdir(osp.join(data_root, img_dir))
+        mask_filename_list = os.listdir(osp.join(data_root, mask_dir))
         assert len(img_filename_list) == len(mask_filename_list)
         img_ids = [str(id.split('.')[0]) for id in mask_filename_list]
         return img_ids
 
     def load_img_and_mask(self, index):
         img_id = self.img_ids[index]
-        img_name = osp.join(self.data_root, self.mode, self.img_dir, img_id + self.img_suffix)
-        mask_name = osp.join(self.data_root, self.mode, self.mask_dir, img_id + self.mask_suffix)
+        img_name = osp.join(self.data_root, self.img_dir, img_id + self.img_suffix)
+        mask_name = osp.join(self.data_root, self.mask_dir, img_id + self.mask_suffix)
         img = Image.open(img_name).convert('RGB')
         mask = Image.open(mask_name).convert('L')
         return img, mask

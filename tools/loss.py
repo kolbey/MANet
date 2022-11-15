@@ -1,42 +1,18 @@
-from typing import List
-
 import torch
-import torch.nn.functional as F
-from torch import Tensor
-from torch.nn.modules.loss import _Loss
 import numpy as np
+import torch.nn as nn
+from typing import Optional
+from typing import List
+from torch import nn, Tensor
+from torch.nn.modules.loss import _Loss
+import torch.nn.functional as F
+from .functional import label_smoothed_nll_loss, soft_dice_score
 
 
-__all__ = ["DiceLoss"]
 
 BINARY_MODE = "binary"
 MULTICLASS_MODE = "multiclass"
 MULTILABEL_MODE = "multilabel"
-
-def soft_dice_score(
-    output: torch.Tensor, target: torch.Tensor, smooth: float = 0.0, eps: float = 1e-7, dims=None
-) -> torch.Tensor:
-    """
-    :param output:
-    :param target:
-    :param smooth:
-    :param eps:
-    :return:
-    Shape:
-        - Input: :math:`(N, NC, *)` where :math:`*` means any number
-            of additional dimensions
-        - Target: :math:`(N, NC, *)`, same shape as the input
-        - Output: scalar.
-    """
-    assert output.size() == target.size()
-    if dims is not None:
-        intersection = torch.sum(output * target, dim=dims)
-        cardinality = torch.sum(output + target, dim=dims)
-    else:
-        intersection = torch.sum(output * target)
-        cardinality = torch.sum(output + target)
-    dice_score = (2.0 * intersection + smooth) / (cardinality + smooth).clamp_min(eps)
-    return dice_score
 
 
 def to_tensor(x, dtype=None) -> torch.Tensor:
@@ -59,7 +35,66 @@ def to_tensor(x, dtype=None) -> torch.Tensor:
     raise ValueError("Unsupported input type" + str(type(x)))
 
 
+class WeightedLoss(_Loss):
+    """Wrapper class around loss function that applies weighted with fixed factor.
+    This class helps to balance multiple losses if they have different scales
+    """
+
+    def __init__(self, loss, weight=1.0):
+        super().__init__()
+        self.loss = loss
+        self.weight = weight
+
+    def forward(self, *input):
+        return self.loss(*input) * self.weight
+
+class JointLoss(_Loss):
+    """
+    Wrap two loss functions into one. This class computes a weighted sum of two losses.
+    """
+
+    def __init__(self, first: nn.Module, second: nn.Module, first_weight=1.0, second_weight=1.0):
+        super().__init__()
+        self.first = WeightedLoss(first, first_weight)
+        self.second = WeightedLoss(second, second_weight)
+
+    def forward(self, *input):
+        return self.first(*input) + self.second(*input)
+
+
+class SoftCrossEntropyLoss(nn.Module):
+    """
+    Drop-in replacement for nn.CrossEntropyLoss with few additions:
+    - Support of label smoothing
+    """
+
+    __constants__ = ["reduction", "ignore_index", "smooth_factor"]
+
+    def __init__(self, reduction: str = "mean", smooth_factor: float = 0.0, ignore_index: Optional[int] = -100, dim=1):
+        super().__init__()
+        self.smooth_factor = smooth_factor
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+        self.dim = dim
+
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        log_prob = F.log_softmax(input, dim=self.dim)
+        return label_smoothed_nll_loss(
+            log_prob,
+            target,
+            epsilon=self.smooth_factor,
+            ignore_index=self.ignore_index,
+            reduction=self.reduction,
+            dim=self.dim,
+        )
+
+
 class DiceLoss(_Loss):
+    """
+    Implementation of Dice loss for image segmentation task.
+    It supports binary, multiclass and multilabel cases
+    """
+
     def __init__(
         self,
         mode: str = 'multiclass',
@@ -71,6 +106,7 @@ class DiceLoss(_Loss):
         eps=1e-7,
     ):
         """
+
         :param mode: Metric mode {'binary', 'multiclass', 'multilabel'}
         :param classes: Optional list of classes that contribute in loss computation;
         By default, all channels are included.
@@ -96,6 +132,7 @@ class DiceLoss(_Loss):
 
     def forward(self, y_pred: Tensor, y_true: Tensor) -> Tensor:
         """
+
         :param y_pred: NxCxHxW
         :param y_true: NxHxW
         :return: scalar
@@ -154,6 +191,11 @@ class DiceLoss(_Loss):
         else:
             loss = 1.0 - scores
 
+        # Dice loss is undefined for non-empty classes
+        # So we zero contribution of channel that does not have true pixels
+        # NOTE: A better workaround would be to use loss term `mean(y_pred)`
+        # for this case, however it will be a modified jaccard loss
+
         mask = y_true.sum(dims) > 0
         loss *= mask.to(loss.dtype)
 
@@ -161,3 +203,22 @@ class DiceLoss(_Loss):
             loss = loss[self.classes]
 
         return loss.mean()
+
+
+
+class UsefulLoss(nn.Module):
+
+    def __init__(self, ignore_index=255): # ignore_index=255
+        super().__init__()
+        self.main_loss = JointLoss(SoftCrossEntropyLoss(smooth_factor=0.05, ignore_index=ignore_index),
+                                   DiceLoss(smooth=0.05, ignore_index=ignore_index), 1.0, 1.0)
+        self.aux_loss = SoftCrossEntropyLoss(smooth_factor=0.05, ignore_index=ignore_index)
+
+    def forward(self, logits, labels):
+        if self.training and len(logits) == 2:
+            logit_main, logit_aux = logits
+            loss = self.main_loss(logit_main, labels) + 0.4 * self.aux_loss(logit_aux, labels)
+        else:
+            loss = self.main_loss(logits, labels)
+
+        return loss
