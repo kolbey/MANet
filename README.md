@@ -5,7 +5,7 @@
 
 ## Install
 
-Open the folder **airs** using **Linux Terminal** and create python environment:
+Open the folder **GeoLab** using **Linux Terminal** and create python environment:
 ```
 conda create -n OMGD python=3.8
 conda activate OMGD
